@@ -1,0 +1,104 @@
+/// @brief Plane Detection Sample
+/// @brief Copyright (C) 2016 Toyota Motor Corporation
+#include <string>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/visualization/cloud_viewer.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl_msgs/ModelCoefficients.h>
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+
+namespace hsrb_vision_samples {
+/// @class PlaneDetection
+/// @brief detecting and painting a plane class using Point Cloud Library
+class PlaneDetection {
+ public:
+  PlaneDetection()
+      : output_cloud_(new pcl::PointCloud<pcl::PointXYZRGB>) {
+    // subscribe point cloud data from HSR
+    std::string topic_name = "/hsrb/head_rgbd_sensor/depth_registered/rectified_points";
+    cloud_sub_ = nh_.subscribe(topic_name, 1, &PlaneDetection::CloudCb, this);
+
+
+    // publish output cloud
+    plane_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/plane_detection_output", 1);
+  }
+
+  pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr GetOutputCloud() const {
+    return PlaneDetection::output_cloud_;
+  }
+
+ private:
+  ros::NodeHandle nh_;
+  ros::Subscriber cloud_sub_;
+  ros::Publisher plane_pub_;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr output_cloud_;
+
+  void CloudCb(const sensor_msgs::PointCloud2ConstPtr& msg) {
+    // convert message type
+    pcl::PointCloud<pcl::PointXYZRGB> cloud;
+    pcl::fromROSMsg(*msg, cloud);
+
+    // plane model segmentation
+    pcl::SACSegmentation<pcl::PointXYZRGB> seg;
+    seg.setOptimizeCoefficients(true);
+    seg.setModelType(pcl::SACMODEL_PLANE);
+    seg.setMethodType(pcl::SAC_RANSAC);
+    seg.setDistanceThreshold(0.01);
+    seg.setInputCloud(cloud.makeShared());
+
+    pcl::PointIndices inliers;
+    pcl::ModelCoefficients coefficients;
+    seg.segment(inliers, coefficients);
+
+    // paint a plane red
+    pcl::copyPointCloud(cloud, *output_cloud_);
+    for (size_t i = 0; i < inliers.indices.size(); i++) {
+      output_cloud_->points[inliers.indices[i]].r = 255;
+      output_cloud_->points[inliers.indices[i]].g = 0;
+      output_cloud_->points[inliers.indices[i]].b = 0;
+    }
+    pcl::ExtractIndices<pcl::PointXYZ> extract;
+    extract.setInputCloud (cloud_filtered);
+    extract.setIndices (inliers);
+    extract.setNegative (false);
+
+    // Get the points associated with the planar surface
+    extract.filter (*cloud_plane);
+    //std::cout << "PointCloud representing the planar component: " << cloud_plane->points.size () << " data points." << std::endl;
+    PointCloud::Ptr cloud_f (new pcl::PointCloud<pcl::PointXYZ>);
+
+    // Remove the planar inliers, extract the rest
+    extract.setNegative (true);
+    extract.filter (*cloud_f);
+    *cloud_filtered = *cloud_f;
+
+    // publish detected plane cloud
+    sensor_msgs::PointCloud2 pub_cloud;
+    pcl::toROSMsg(*output_cloud_, pub_cloud);
+    plane_pub_.publish(pub_cloud);
+  }
+};
+}  // namespace hsrb_vision_samples
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, "plane_detection");
+  hsrb_vision_samples::PlaneDetection plane_detection;
+  ros::Rate spin_rate(10);
+
+  pcl::visualization::CloudViewer plane_viewer("Plane Detection Viewer");
+
+  while (ros::ok()) {
+    ros::spinOnce();
+    if (!plane_viewer.wasStopped()) {
+      plane_viewer.showCloud(plane_detection.GetOutputCloud());
+    }
+    spin_rate.sleep();
+  }
+
+  return 0;
+}
